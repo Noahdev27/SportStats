@@ -1,0 +1,93 @@
+// SportStats — modèle de données
+// Docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum MatchStatus {
+  SCHEDULED
+  LIVE
+  FINISHED
+  POSTPONED
+  CANCELLED
+
+  @@map("match_status")
+}
+
+model Team {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique @db.VarChar(100)
+  shortName   String   @map("short_name") @db.VarChar(10)
+  country     String   @db.VarChar(60)
+  city        String?  @db.VarChar(80)
+  stadium     String?  @db.VarChar(120)
+  foundedYear Int?     @map("founded_year")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  homeMatches Match[] @relation("HomeTeam")
+  awayMatches Match[] @relation("AwayTeam")
+
+  @@index([country])
+  @@map("teams")
+}
+
+model Match {
+  id            Int         @id @default(autoincrement())
+  competition   String      @db.VarChar(80)
+  season        String      @db.VarChar(9)
+  matchday      Int?
+  kickoffAt     DateTime    @map("kickoff_at")
+  venue         String?     @db.VarChar(120)
+  status        MatchStatus @default(SCHEDULED)
+  homeTeamId    Int         @map("home_team_id")
+  awayTeamId    Int         @map("away_team_id")
+  homeScore     Int?        @map("home_score")
+  awayScore     Int?        @map("away_score")
+  homeHalfScore Int?        @map("home_half_score")
+  awayHalfScore Int?        @map("away_half_score")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+
+  homeTeam   Team             @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Restrict)
+  awayTeam   Team             @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Restrict)
+  statistics MatchStatistics?
+
+  @@index([homeTeamId, kickoffAt])
+  @@index([awayTeamId, kickoffAt])
+  @@index([status, kickoffAt])
+  @@index([competition, season])
+  @@map("matches")
+}
+
+model MatchStatistics {
+  matchId           Int      @id @map("match_id")
+  homeCorners       Int      @map("home_corners")
+  awayCorners       Int      @map("away_corners")
+  homeShots         Int?     @map("home_shots")
+  awayShots         Int?     @map("away_shots")
+  homeShotsOnTarget Int?     @map("home_shots_on_target")
+  awayShotsOnTarget Int?     @map("away_shots_on_target")
+  homePossession    Int?     @map("home_possession")
+  awayPossession    Int?     @map("away_possession")
+  homeFouls         Int?     @map("home_fouls")
+  awayFouls         Int?     @map("away_fouls")
+  homeYellowCards   Int?     @map("home_yellow_cards")
+  awayYellowCards   Int?     @map("away_yellow_cards")
+  homeRedCards      Int?     @map("home_red_cards")
+  awayRedCards      Int?     @map("away_red_cards")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@map("match_statistics")
+}
