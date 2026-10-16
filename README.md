@@ -7,7 +7,7 @@ API REST dédiée à la centralisation, à l'organisation et à l'analyse de don
 - **Langage** : TypeScript (mode `strict`, ESM)
 - **ORM / BDD** : Prisma ORM 7 (adaptateur `@prisma/adapter-pg`) + PostgreSQL
 - **Validation & sécurité** : Zod 4, Helmet, CORS, middleware global de gestion d'erreurs
-- **IA** : Grok (xAI) pour l'analyse d'avant-match, les résumés d'équipe et les questions en langage naturel
+- **IA** : Groq (gratuit, compatible OpenAI) pour l'analyse d'avant-match, les résumés d'équipe et les questions en langage naturel
 - **Documentation** : OpenAPI 3.0 + Swagger UI (`/api-docs`)
 - **Tests** : Vitest + Supertest (tests d'intégration sur une vraie base PostgreSQL)
 
@@ -62,7 +62,7 @@ src/
 ├── config/            # Env (validé par Zod), client Prisma, spécification OpenAPI
 ├── controllers/       # Couche HTTP : lit la requête validée, renvoie la réponse
 ├── services/          # Logique métier & requêtes Prisma / SQL d'agrégation
-│   └── ai/            # Client Grok (xAI) et modèles de prompts
+│   └── ai/            # Client LLM compatible OpenAI (Groq) et prompts
 ├── routes/            # Endpoints Express + middlewares de validation
 ├── middlewares/       # Validation Zod, gestion d'erreurs, logger de requêtes
 ├── types/             # Schémas Zod (DTO) et types dérivés
@@ -101,8 +101,8 @@ Tous les endpoints métier sont préfixés par `/api/v1`.
 | GET | `/stats/overview` | Agrégats globaux : moyennes buts/corners, +2.5, BTTS, 1N2 |
 | GET | `/stats/standings` | Classement avec statistiques globales / domicile / extérieur |
 | GET | `/stats/teams/:id` | Statistiques d'une équipe : global / domicile / extérieur |
-| GET | `/ai/matches/:id/preview` | Analyse d'avant-match rédigée par Grok |
-| GET | `/ai/teams/:id/summary` | Résumé des performances d'une équipe rédigé par Grok |
+| GET | `/ai/matches/:id/preview` | Analyse d'avant-match rédigée par l'IA |
+| GET | `/ai/teams/:id/summary` | Résumé des performances d'une équipe rédigé par l'IA |
 | POST | `/ai/ask` | Question en langage naturel sur les données |
 
 ### Filtres des matchs (`GET /api/v1/matches`)
@@ -153,17 +153,18 @@ Conventions :
 `GET /api/v1/stats/standings?season=2026/2027` renvoie le classement (points, puis différence de
 buts, puis buts marqués), chaque ligne contenant les mêmes blocs `overall` / `home` / `away`.
 
-## IA (Grok)
+## IA (Groq)
 
-L'API utilise **Grok** (xAI) via son endpoint compatible OpenAI (`POST {XAI_BASE_URL}/chat/completions`),
-avec le `fetch` natif de Node : aucun SDK supplémentaire.
+L'API utilise **[Groq](https://groq.com)**, gratuit sans carte bancaire, via son endpoint compatible
+OpenAI (`POST {AI_BASE_URL}/chat/completions`), avec le `fetch` natif de Node : aucun SDK.
+Le modèle par défaut est `openai/gpt-oss-120b`.
 
-**Principe** : l'API calcule elle-même les statistiques (SQL), puis les transmet à Grok en JSON avec
+**Principe** : l'API calcule elle-même les statistiques (SQL), puis les transmet au modèle en JSON avec
 la consigne de s'appuyer **uniquement** sur ces données, sans rien inventer (blessures, transferts...).
 Chaque réponse contient le texte rédigé (`analysis`, en Markdown) **et** les données envoyées
 (`context`), ce qui permet de vérifier l'analyse ou d'exploiter directement les chiffres.
 
-| Endpoint | Données transmises à Grok |
+| Endpoint | Données transmises au modèle |
 | --- | --- |
 | `GET /api/v1/ai/matches/:id/preview` | Forme (5 derniers matchs), stats domicile de l'équipe recevante et extérieur de l'équipe visiteuse sur la saison, 5 dernières confrontations directes, moyennes du championnat — uniquement des matchs antérieurs au coup d'envoi. Matchs `SCHEDULED`, `POSTPONED` ou `LIVE`. |
 | `GET /api/v1/ai/teams/:id/summary` | Stats de l'équipe (mêmes filtres que `/stats/teams/:id`) + 5 derniers résultats |
@@ -177,16 +178,24 @@ curl -X POST http://localhost:3000/api/v1/ai/ask \
 
 **Configuration** :
 
-1. Créez une clé API sur [console.x.ai](https://console.x.ai) et renseignez `XAI_API_KEY` dans `.env`.
-2. Vérifiez dans la console le modèle disponible pour votre compte et ajustez `XAI_MODEL`
-   (par défaut `grok-3-mini`, l'un des moins chers). Les crédits gratuits proposés par xAI
-   varient selon les périodes : consultez votre tableau de bord.
-3. `AI_RATE_LIMIT_PER_MINUTE` (10 par défaut) limite les appels par minute et par IP pour
-   préserver vos crédits.
+1. Créez une clé gratuite sur [console.groq.com/keys](https://console.groq.com/keys) et
+   renseignez `AI_API_KEY` dans `.env`. C'est tout : les autres valeurs ont des défauts pour Groq.
+2. Les limites gratuites de votre compte sont visibles sur
+   [console.groq.com/settings/limits](https://console.groq.com/settings/limits). À titre indicatif,
+   `openai/gpt-oss-120b` était annoncé à 30 requêtes/min, 1 000 requêtes/jour, 8 000 tokens/min et
+   200 000 tokens/jour. Un appel consomme environ 1 000 (analyse de match) à 4 000 tokens (question).
+3. `AI_REASONING_EFFORT=low` limite les tokens de raisonnement des modèles gpt-oss (donc la
+   consommation du quota). Mettez `none` si vous passez à un modèle sans raisonnement
+   (ex. `llama-3.3-70b-versatile`).
+4. `AI_RATE_LIMIT_PER_MINUTE` (5 par défaut) limite les appels par minute et par IP.
+
+**Changer de fournisseur** : toute API compatible OpenAI fonctionne en modifiant uniquement
+`AI_BASE_URL`, `AI_MODEL` et `AI_API_KEY` (OpenRouter, Mistral, Ollama en local...).
 
 Sans clé, le reste de l'API fonctionne normalement et les endpoints `/ai` répondent
-`503 AI_NOT_CONFIGURED`. Les probabilités produites par Grok sont des estimations indicatives
-fondées sur les statistiques, pas des prédictions fiables.
+`503 AI_NOT_CONFIGURED`. Si le quota gratuit est dépassé, ils répondent `429 AI_RATE_LIMITED`.
+Les probabilités produites par le modèle sont des estimations indicatives fondées sur les
+statistiques, pas des prédictions fiables.
 
 ## Formats de réponse
 
@@ -214,7 +223,7 @@ fondées sur les statistiques, pas des prédictions fiables.
 | 409 | `TEAM_ALREADY_EXISTS`, `TEAM_HAS_MATCHES`, `MATCH_NOT_PLAYED`, `UNIQUE_CONSTRAINT`, `FOREIGN_KEY_CONSTRAINT` |
 | 409 (IA) | `MATCH_NOT_UPCOMING` |
 | 413 | `PAYLOAD_TOO_LARGE` |
-| 429 | `RATE_LIMITED` (limite de l'API), `AI_RATE_LIMITED` (quota Grok) |
+| 429 | `RATE_LIMITED` (limite de l'API), `AI_RATE_LIMITED` (quota Groq) |
 | 500 | `INTERNAL_SERVER_ERROR`, `DATABASE_ERROR` |
 | 502 / 503 / 504 | `AI_UPSTREAM_ERROR`, `AI_AUTH_ERROR` / `AI_NOT_CONFIGURED` / `AI_TIMEOUT` |
 
@@ -254,7 +263,7 @@ Les tests d'intégration utilisent la base désignée par `TEST_DATABASE_URL` (p
 tests ; par sécurité, la suite refuse de s'exécuter sur une base dont le nom ne contient pas `test`.
 
 Ils couvrent le CRUD, la validation et les règles métier, les filtres, les calculs d'analytics
-(valeurs vérifiées à la main), les endpoints IA (Grok est simulé : aucun appel réel, aucun crédit
+(valeurs vérifiées à la main), les endpoints IA (le fournisseur est simulé : aucun appel réel, aucun quota
 consommé) et la **couverture de la documentation** : un test échoue si une
 route Express n'est pas décrite dans la spécification OpenAPI (ou inversement).
 
@@ -266,9 +275,10 @@ route Express n'est pas décrite dans la spécification OpenAPI (ou inversement)
 | `PORT` | `3000` | Port HTTP |
 | `NODE_ENV` | `development` | `development`, `production` ou `test` |
 | `CORS_ORIGIN` | `*` | Origines autorisées, séparées par des virgules |
-| `XAI_API_KEY` | — (optionnel) | Clé API Grok ; sans elle, `/ai` répond 503 |
-| `XAI_MODEL` | `grok-3-mini` | Modèle Grok utilisé |
-| `XAI_BASE_URL` | `https://api.x.ai/v1` | URL de l'API xAI |
-| `XAI_TIMEOUT_MS` | `60000` | Délai maximal d'une réponse Grok |
-| `AI_RATE_LIMIT_PER_MINUTE` | `10` | Appels IA autorisés par minute et par IP |
+| `AI_API_KEY` | — (optionnel) | Clé API Groq ; sans elle, `/ai` répond 503 |
+| `AI_BASE_URL` | `https://api.groq.com/openai/v1` | URL de l'API (compatible OpenAI) |
+| `AI_MODEL` | `openai/gpt-oss-120b` | Modèle utilisé |
+| `AI_REASONING_EFFORT` | `low` | `low`, `medium`, `high`, ou `none` pour ne pas envoyer le paramètre |
+| `AI_TIMEOUT_MS` | `60000` | Délai maximal d'une réponse du modèle |
+| `AI_RATE_LIMIT_PER_MINUTE` | `5` | Appels IA autorisés par minute et par IP |
 | `TEST_DATABASE_URL` | base `sportstats_test` locale | Base utilisée par `npm test` |

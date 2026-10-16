@@ -11,11 +11,11 @@ let finishedId: number;
 interface SentRequest {
   url: string;
   headers: Record<string, string>;
-  body: { model: string; messages: { role: string; content: string }[] };
+  body: { model: string; reasoning_effort?: string; messages: { role: string; content: string }[] };
 }
 
-/** Replaces `fetch` with a fake Grok endpoint and records what was sent to it. */
-const mockGrok = (reply: { status?: number; body?: unknown } = {}) => {
+/** Replaces `fetch` with a fake chat-completions endpoint and records what was sent to it. */
+const mockLlm = (reply: { status?: number; body?: unknown } = {}) => {
   const sent: SentRequest[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
     sent.push({
@@ -24,7 +24,7 @@ const mockGrok = (reply: { status?: number; body?: unknown } = {}) => {
       body: JSON.parse(String(init?.body)),
     });
     const body = reply.body ?? {
-      model: 'grok-test',
+      model: 'test-model',
       choices: [{ message: { role: 'assistant', content: '## Analyse\nPSG favori.' } }],
       usage: { prompt_tokens: 900, completion_tokens: 120, total_tokens: 1020 },
     };
@@ -47,22 +47,23 @@ afterEach(() => vi.restoreAllMocks());
 afterAll(() => prisma.$disconnect());
 
 describe('GET /api/v1/ai/matches/:id/preview', () => {
-  it('sends the computed statistics to Grok and returns its analysis', async () => {
-    const sent = mockGrok();
+  it('sends the computed statistics to the model and returns its analysis', async () => {
+    const sent = mockLlm();
     const res = await api().get(`/api/v1/ai/matches/${upcomingId}/preview`);
 
     expect(res.status).toBe(200);
     expect(res.body.data).toMatchObject({
       analysis: '## Analyse\nPSG favori.',
-      model: 'grok-test',
+      model: 'test-model',
       usage: { promptTokens: 900, completionTokens: 120, totalTokens: 1020 },
     });
 
     expect(sent).toHaveLength(1);
     const [request] = sent as [SentRequest];
-    expect(request.url).toBe('https://grok.test/v1/chat/completions');
+    expect(request.url).toBe('https://llm.test/v1/chat/completions');
     expect(request.headers.Authorization).toBe('Bearer test-key');
-    expect(request.body.model).toBe('grok-test');
+    expect(request.body.model).toBe('test-model');
+    expect(request.body.reasoning_effort).toBe('low');
     expect(request.body.messages[0]).toMatchObject({ role: 'system' });
     expect(userPrompt(request)).toContain('Paris Saint-Germain – Olympique de Marseille');
 
@@ -79,7 +80,7 @@ describe('GET /api/v1/ai/matches/:id/preview', () => {
   });
 
   it('refuses matches that are already played', async () => {
-    const sent = mockGrok();
+    const sent = mockLlm();
     const res = await api().get(`/api/v1/ai/matches/${finishedId}/preview`);
     expect(res.status).toBe(409);
     expect(res.body.error.code).toBe('MATCH_NOT_UPCOMING');
@@ -87,14 +88,14 @@ describe('GET /api/v1/ai/matches/:id/preview', () => {
   });
 
   it('returns 404 for an unknown match', async () => {
-    mockGrok();
+    mockLlm();
     expect((await api().get('/api/v1/ai/matches/999/preview')).status).toBe(404);
   });
 });
 
 describe('GET /api/v1/ai/teams/:id/summary', () => {
   it('summarises a team from its statistics and last results', async () => {
-    const sent = mockGrok();
+    const sent = mockLlm();
     const res = await api().get(`/api/v1/ai/teams/${home}/summary`).query({ season: '2026/2027' });
 
     expect(res.status).toBe(200);
@@ -110,7 +111,7 @@ describe('GET /api/v1/ai/teams/:id/summary', () => {
 
 describe('POST /api/v1/ai/ask', () => {
   it('answers from the standings of the latest season by default', async () => {
-    const sent = mockGrok();
+    const sent = mockLlm();
     const res = await api().post('/api/v1/ai/ask').send({ question: 'Qui est premier ?' });
 
     expect(res.status).toBe(200);
@@ -122,7 +123,7 @@ describe('POST /api/v1/ai/ask', () => {
   });
 
   it('validates the question', async () => {
-    const sent = mockGrok();
+    const sent = mockLlm();
     const res = await api().post('/api/v1/ai/ask').send({ question: 'a'.repeat(501) });
     expect(res.status).toBe(400);
     expect(res.body.error.details[0].path).toBe('body.question');
@@ -130,25 +131,25 @@ describe('POST /api/v1/ai/ask', () => {
   });
 
   it('returns 404 when no finished match matches the filters', async () => {
-    mockGrok();
+    mockLlm();
     expect((await api().post('/api/v1/ai/ask').send({ question: 'Qui est premier ?', competition: 'Serie A' })).status).toBe(404);
   });
 });
 
-describe('Grok errors', () => {
+describe('AI provider errors', () => {
   it.each([
     [429, 429, 'AI_RATE_LIMITED'],
     [401, 502, 'AI_AUTH_ERROR'],
     [500, 502, 'AI_UPSTREAM_ERROR'],
   ])('maps an upstream %i to %i %s', async (upstream, expected, code) => {
-    mockGrok({ status: upstream, body: { error: 'boom' } });
+    mockLlm({ status: upstream, body: { error: 'boom' } });
     const res = await api().get(`/api/v1/ai/teams/${home}/summary`);
     expect(res.status).toBe(expected);
     expect(res.body.error.code).toBe(code);
   });
 
   it('rejects malformed completions', async () => {
-    mockGrok({ body: { model: 'grok-test', choices: [] } });
+    mockLlm({ body: { model: 'test-model', choices: [] } });
     const res = await api().get(`/api/v1/ai/teams/${home}/summary`);
     expect(res.status).toBe(502);
   });
@@ -160,22 +161,34 @@ describe('Grok errors', () => {
     expect(res.body.error.code).toBe('AI_TIMEOUT');
   });
 
-  it('answers 503 when no API key is configured, without calling Grok', async () => {
-    const sent = mockGrok();
-    const key = env.XAI_API_KEY;
-    env.XAI_API_KEY = undefined;
+  it('answers 503 when no API key is configured, without calling the provider', async () => {
+    const sent = mockLlm();
+    const key = env.AI_API_KEY;
+    env.AI_API_KEY = undefined;
     try {
       const res = await api().post('/api/v1/ai/ask').send({ question: 'Qui est premier ?' });
       expect(res.status).toBe(503);
       expect(res.body.error.code).toBe('AI_NOT_CONFIGURED');
       expect(sent).toHaveLength(0);
     } finally {
-      env.XAI_API_KEY = key;
+      env.AI_API_KEY = key;
+    }
+  });
+
+  it('omits reasoning_effort when set to none', async () => {
+    const sent = mockLlm();
+    const effort = env.AI_REASONING_EFFORT;
+    env.AI_REASONING_EFFORT = 'none';
+    try {
+      expect((await api().get(`/api/v1/ai/teams/${home}/summary`)).status).toBe(200);
+      expect(sent[0]!.body).not.toHaveProperty('reasoning_effort');
+    } finally {
+      env.AI_REASONING_EFFORT = effort;
     }
   });
 
   it('exposes the rate limit headers', async () => {
-    mockGrok();
+    mockLlm();
     const res = await api().get(`/api/v1/ai/teams/${home}/summary`);
     expect(res.headers['ratelimit-policy']).toContain('q=1000');
   });

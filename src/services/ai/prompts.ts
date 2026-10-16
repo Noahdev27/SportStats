@@ -1,4 +1,4 @@
-/** Prompt templates sent to Grok. The data is always provided as JSON. */
+/** Prompt templates sent to the language model. The data is always provided as JSON. */
 
 export const SYSTEM_PROMPT = [
   "Tu es l'analyste football de l'API SportStats.",

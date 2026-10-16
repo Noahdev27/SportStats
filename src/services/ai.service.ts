@@ -1,7 +1,7 @@
 import { prisma } from '../config/database.js';
 import type { AiAnswer, AskInput, TeamSummaryQuery } from '../types/ai.schema.js';
 import { AppError } from '../utils/app-error.js';
-import { grokClient, type ChatCompletion } from './ai/grok.client.js';
+import { llmClient, notConfiguredError, type ChatCompletion } from './ai/llm.client.js';
 import { askPrompt, matchPreviewPrompt, SYSTEM_PROMPT, teamSummaryPrompt } from './ai/prompts.js';
 import { matchService } from './match.service.js';
 import { statsService } from './stats.service.js';
@@ -27,7 +27,7 @@ const compactMatch = (match: {
 });
 
 const generate = async <TContext>(prompt: string, context: TContext): Promise<AiAnswer<TContext>> => {
-  const completion: ChatCompletion = await grokClient.chat([
+  const completion: ChatCompletion = await llmClient.chat([
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: prompt },
   ]);
@@ -42,9 +42,7 @@ const generate = async <TContext>(prompt: string, context: TContext): Promise<Ai
 
 /** Fails fast (before computing anything) when no API key is configured. */
 const assertConfigured = () => {
-  if (!grokClient.isConfigured()) {
-    throw new AppError(503, 'AI_NOT_CONFIGURED', "L'IA n'est pas configurée : définissez XAI_API_KEY.");
-  }
+  if (!llmClient.isConfigured()) throw notConfiguredError();
 };
 
 export const aiService = {

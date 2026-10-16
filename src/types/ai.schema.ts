@@ -13,9 +13,9 @@ export type TeamSummaryQuery = z.infer<typeof teamSummaryQuerySchema>;
 export type AskInput = z.infer<typeof askBodySchema>;
 
 export interface AiAnswer<TContext> {
-  /** Text produced by Grok (Markdown, in French). */
+  /** Text produced by the language model (Markdown, in French). */
   analysis: string;
-  /** Data computed by the API and sent to Grok: the answer must be grounded in it. */
+  /** Data computed by the API and sent to the model: the answer must be grounded in it. */
   context: TContext;
   model: string;
   usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null;

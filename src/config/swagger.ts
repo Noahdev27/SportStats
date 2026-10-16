@@ -163,7 +163,7 @@ const aiAnswerExample = {
   analysis:
     '## Olympique Lyonnais – Paris Saint-Germain\n\n**Forme récente** : le PSG reste sur 4 victoires en 5 matchs (2,2 buts marqués par match)...',
   context: { match: { id: 116, homeTeam: { id: 5, name: 'Olympique Lyonnais', shortName: 'OL' } }, '...': '...' },
-  model: 'grok-3-mini',
+  model: 'openai/gpt-oss-120b',
   usage: { promptTokens: 1210, completionTokens: 420, totalTokens: 1630 },
   generatedAt: '2026-10-16T17:00:00.000Z',
 };
@@ -196,7 +196,7 @@ export const openApiDocument = {
     {
       name: 'AI',
       description:
-        'Analyses rédigées par Grok (xAI) à partir des statistiques calculées par l’API. Nécessite `XAI_API_KEY`. Limité à `AI_RATE_LIMIT_PER_MINUTE` appels par minute et par IP.',
+        'Analyses rédigées par un modèle de langage (Groq par défaut) à partir des statistiques calculées par l’API. Nécessite `AI_API_KEY`. Limité à `AI_RATE_LIMIT_PER_MINUTE` appels par minute et par IP.',
     },
     { name: 'System', description: 'Supervision.' },
   ],
@@ -511,9 +511,9 @@ export const openApiDocument = {
       parameters: [param('Id')],
       get: {
         tags: ['AI'],
-        summary: 'Analyse d’avant-match générée par Grok',
+        summary: 'Analyse d’avant-match générée par l’IA',
         description: [
-          'Grok reçoit la forme récente (5 derniers matchs) des deux équipes, leurs statistiques domicile/extérieur de la saison,',
+          'L’IA reçoit la forme récente (5 derniers matchs) des deux équipes, leurs statistiques domicile/extérieur de la saison,',
           'les confrontations directes et les moyennes du championnat — uniquement des données antérieures au coup d’envoi —',
           'et rédige une analyse avec des tendances chiffrées (1N2, +2.5 buts, BTTS, +9.5 corners).',
           'Disponible pour les matchs `SCHEDULED`, `POSTPONED` et `LIVE`. Les données transmises sont renvoyées dans `context`.',
@@ -532,7 +532,7 @@ export const openApiDocument = {
       parameters: [param('Id')],
       get: {
         tags: ['AI'],
-        summary: 'Résumé des performances d’une équipe généré par Grok',
+        summary: 'Résumé des performances d’une équipe généré par l’IA',
         description: 'Mêmes filtres que `GET /api/v1/stats/teams/{id}` ; les 5 derniers résultats sont ajoutés au contexte.',
         operationId: 'getTeamSummary',
         parameters: [
@@ -557,7 +557,7 @@ export const openApiDocument = {
         tags: ['AI'],
         summary: 'Poser une question en langage naturel sur les données',
         description: [
-          'Grok répond à partir du classement (avec splits domicile/extérieur), des moyennes du championnat,',
+          'L’IA répond à partir du classement (avec splits domicile/extérieur), des moyennes du championnat,',
           'des 15 derniers résultats et des 10 prochains matchs de la saison demandée',
           '(par défaut : la saison la plus récente ayant des matchs terminés).',
         ].join(' '),
@@ -615,20 +615,20 @@ export const openApiDocument = {
         content: json(ref('Error'), { error: { code: 'NOT_FOUND', message: 'Équipe introuvable (id: 999).' } }),
       },
       TooManyRequests: {
-        description: 'Limite d’appels atteinte (`RATE_LIMITED` : limite de l’API ; `AI_RATE_LIMITED` : quota Grok).',
+        description: 'Limite d’appels atteinte (`RATE_LIMITED` : limite de l’API ; `AI_RATE_LIMITED` : quota du fournisseur d’IA, ex. offre gratuite Groq).',
         content: json(ref('Error'), { error: { code: 'RATE_LIMITED', message: 'Trop de requêtes vers l’IA, réessayez dans une minute.' } }),
       },
       AiUpstreamError: {
-        description: 'Erreur du service Grok (`AI_UPSTREAM_ERROR`, `AI_AUTH_ERROR`).',
-        content: json(ref('Error'), { error: { code: 'AI_UPSTREAM_ERROR', message: 'Le service Grok a renvoyé une erreur (500).' } }),
+        description: 'Erreur du service d’IA (`AI_UPSTREAM_ERROR`, `AI_AUTH_ERROR`).',
+        content: json(ref('Error'), { error: { code: 'AI_UPSTREAM_ERROR', message: 'Le service d’IA a renvoyé une erreur (500).' } }),
       },
       AiNotConfigured: {
-        description: 'IA non configurée (`AI_NOT_CONFIGURED`) : `XAI_API_KEY` absente.',
-        content: json(ref('Error'), { error: { code: 'AI_NOT_CONFIGURED', message: 'L’IA n’est pas configurée : définissez XAI_API_KEY.' } }),
+        description: 'IA non configurée (`AI_NOT_CONFIGURED`) : `AI_API_KEY` absente.',
+        content: json(ref('Error'), { error: { code: 'AI_NOT_CONFIGURED', message: 'L’IA n’est pas configurée : définissez AI_API_KEY (clé Groq).' } }),
       },
       AiTimeout: {
-        description: 'Grok n’a pas répondu à temps (`AI_TIMEOUT`).',
-        content: json(ref('Error'), { error: { code: 'AI_TIMEOUT', message: 'Grok n’a pas répondu dans le délai imparti.' } }),
+        description: 'Le service d’IA n’a pas répondu à temps (`AI_TIMEOUT`).',
+        content: json(ref('Error'), { error: { code: 'AI_TIMEOUT', message: 'Le service d’IA n’a pas répondu dans le délai imparti.' } }),
       },
       Conflict: {
         description: 'Conflit avec l’état actuel de la ressource.',
@@ -871,13 +871,13 @@ export const openApiDocument = {
         type: 'object',
         required: ['analysis', 'context', 'model', 'generatedAt'],
         properties: {
-          analysis: { type: 'string', description: 'Texte rédigé par Grok (Markdown, en français).' },
+          analysis: { type: 'string', description: 'Texte rédigé par le modèle (Markdown, en français).' },
           context: {
             type: 'object',
             additionalProperties: true,
-            description: 'Données calculées par l’API et transmises à Grok : la réponse doit s’y appuyer.',
+            description: 'Données calculées par l’API et transmises au modèle : la réponse doit s’y appuyer.',
           },
-          model: { type: 'string', example: 'grok-3-mini' },
+          model: { type: 'string', example: 'openai/gpt-oss-120b' },
           usage: {
             type: 'object',
             nullable: true,
