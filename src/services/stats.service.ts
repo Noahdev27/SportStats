@@ -5,6 +5,9 @@ import type {
   AnalyticsFilters,
   OverviewQuery,
   OverviewStats,
+  Standings,
+  StandingsQuery,
+  TeamSplits,
   TeamSplitStats,
   TeamStats,
   TeamStatsQuery,
@@ -126,6 +129,80 @@ const findMatchOrThrow = async (matchId: number) => {
   return match;
 };
 
+const emptyTeamSplits = (): TeamSplits => ({ overall: emptySplit(), home: emptySplit(), away: emptySplit() });
+
+/**
+ * Venue splits (overall / home / away) of several teams in ONE query.
+ * Each finished match is projected twice (home and away point of view), then
+ * `GROUP BY team_id, ROLLUP(is_home)` yields the home row, the away row and the
+ * total for every team. `last` keeps only each team's N most recent matches.
+ */
+const computeTeamSplits = async (
+  filters: AnalyticsFilters,
+  options: { teamIds?: number[]; last?: number } = {},
+): Promise<Map<number, TeamSplits>> => {
+  const where = buildConditions(filters);
+  const teamFilter = options.teamIds?.length
+    ? Prisma.sql`WHERE team_id IN (${Prisma.join(options.teamIds)})`
+    : Prisma.empty;
+  const lastFilter = options.last ? Prisma.sql`WHERE rn <= ${options.last}` : Prisma.empty;
+
+  const rows = await prisma.$queryRaw<(TeamSplitRow & { team_id: number })[]>`
+    WITH perspectives AS (
+      SELECT m.id, m.kickoff_at, m.home_team_id AS team_id, TRUE AS is_home,
+             m.home_score AS gf, m.away_score AS ga, s.home_corners AS cf, s.away_corners AS ca
+      FROM matches m
+      LEFT JOIN match_statistics s ON s.match_id = m.id
+      WHERE ${where}
+      UNION ALL
+      SELECT m.id, m.kickoff_at, m.away_team_id AS team_id, FALSE AS is_home,
+             m.away_score AS gf, m.home_score AS ga, s.away_corners AS cf, s.home_corners AS ca
+      FROM matches m
+      LEFT JOIN match_statistics s ON s.match_id = m.id
+      WHERE ${where}
+    ),
+    ranked AS (
+      SELECT *, ROW_NUMBER() OVER (PARTITION BY team_id ORDER BY kickoff_at DESC, id DESC) AS rn
+      FROM perspectives
+      ${teamFilter}
+    ),
+    team_matches AS (
+      SELECT * FROM ranked ${lastFilter}
+    )
+    SELECT
+      team_id,
+      GROUPING(is_home) = 1                         AS is_total,
+      is_home,
+      COUNT(*)::int                                 AS played,
+      COUNT(*) FILTER (WHERE gf > ga)::int          AS wins,
+      COUNT(*) FILTER (WHERE gf = ga)::int          AS draws,
+      COUNT(*) FILTER (WHERE gf < ga)::int          AS losses,
+      COALESCE(SUM(gf), 0)::int                     AS goals_for,
+      COALESCE(SUM(ga), 0)::int                     AS goals_against,
+      AVG(gf)::float8                               AS avg_goals_for,
+      AVG(ga)::float8                               AS avg_goals_against,
+      AVG(gf + ga)::float8                          AS avg_total_goals,
+      AVG((gf + ga > 2)::int)::float8               AS over25_rate,
+      AVG((gf > 0 AND ga > 0)::int)::float8         AS btts_rate,
+      AVG((ga = 0)::int)::float8                    AS clean_sheet_rate,
+      COUNT(cf)::int                                AS corners_matches,
+      AVG(cf)::float8                               AS avg_corners_for,
+      AVG(ca)::float8                               AS avg_corners_against,
+      AVG(cf + ca)::float8                          AS avg_total_corners
+    FROM team_matches
+    GROUP BY team_id, ROLLUP (is_home)
+  `;
+
+  const result = new Map<number, TeamSplits>();
+  for (const row of rows) {
+    const splits = result.get(row.team_id) ?? emptyTeamSplits();
+    const key = row.is_total ? 'overall' : row.is_home ? 'home' : 'away';
+    splits[key] = toSplit(row);
+    result.set(row.team_id, splits);
+  }
+  return result;
+};
+
 export const statsService = {
   async getMatchStatistics(matchId: number): Promise<MatchStatistics> {
     await findMatchOrThrow(matchId);
@@ -241,58 +318,32 @@ export const statsService = {
     });
     if (!team) throw AppError.notFound('Équipe', teamId);
 
-    const limit = query.last ? Prisma.sql`LIMIT ${query.last}` : Prisma.empty;
+    const splits = await computeTeamSplits(query, { teamIds: [teamId], last: query.last });
+    return { team, filters: describeFilters(query), ...(splits.get(teamId) ?? emptyTeamSplits()) };
+  },
 
-    // Each match is projected from the team's point of view (for / against),
-    // then ROLLUP produces the home row, the away row and the overall total.
-    const rows = await prisma.$queryRaw<TeamSplitRow[]>`
-      WITH team_matches AS (
-        SELECT
-          (m.home_team_id = ${teamId})                                               AS is_home,
-          CASE WHEN m.home_team_id = ${teamId} THEN m.home_score ELSE m.away_score END   AS gf,
-          CASE WHEN m.home_team_id = ${teamId} THEN m.away_score ELSE m.home_score END   AS ga,
-          CASE WHEN m.home_team_id = ${teamId} THEN s.home_corners ELSE s.away_corners END AS cf,
-          CASE WHEN m.home_team_id = ${teamId} THEN s.away_corners ELSE s.home_corners END AS ca
-        FROM matches m
-        LEFT JOIN match_statistics s ON s.match_id = m.id
-        WHERE ${buildConditions(query, teamId)}
-        ORDER BY m.kickoff_at DESC
-        ${limit}
-      )
-      SELECT
-        GROUPING(is_home) = 1                         AS is_total,
-        is_home,
-        COUNT(*)::int                                 AS played,
-        COUNT(*) FILTER (WHERE gf > ga)::int          AS wins,
-        COUNT(*) FILTER (WHERE gf = ga)::int          AS draws,
-        COUNT(*) FILTER (WHERE gf < ga)::int          AS losses,
-        COALESCE(SUM(gf), 0)::int                     AS goals_for,
-        COALESCE(SUM(ga), 0)::int                     AS goals_against,
-        AVG(gf)::float8                               AS avg_goals_for,
-        AVG(ga)::float8                               AS avg_goals_against,
-        AVG(gf + ga)::float8                          AS avg_total_goals,
-        AVG((gf + ga > 2)::int)::float8               AS over25_rate,
-        AVG((gf > 0 AND ga > 0)::int)::float8         AS btts_rate,
-        AVG((ga = 0)::int)::float8                    AS clean_sheet_rate,
-        COUNT(cf)::int                                AS corners_matches,
-        AVG(cf)::float8                               AS avg_corners_for,
-        AVG(ca)::float8                               AS avg_corners_against,
-        AVG(cf + ca)::float8                          AS avg_total_corners
-      FROM team_matches
-      GROUP BY ROLLUP (is_home)
-    `;
+  /** League table: every team that played in the filtered matches, with its venue splits. */
+  async getStandings(query: StandingsQuery): Promise<Standings> {
+    const splits = await computeTeamSplits(query);
+    const teams = await prisma.team.findMany({
+      where: { id: { in: [...splits.keys()] } },
+      select: { id: true, name: true, shortName: true },
+    });
 
-    const pick = (predicate: (row: TeamSplitRow) => boolean) => {
-      const row = rows.find(predicate);
-      return row && row.played > 0 ? toSplit(row) : emptySplit();
-    };
+    const rows = teams
+      .map((team) => {
+        const teamSplits = splits.get(team.id) ?? emptyTeamSplits();
+        const { goalsFor, goalsAgainst } = teamSplits.overall;
+        return { team, goalDifference: goalsFor - goalsAgainst, ...teamSplits };
+      })
+      .sort(
+        (a, b) =>
+          b.overall.points - a.overall.points ||
+          b.goalDifference - a.goalDifference ||
+          b.overall.goalsFor - a.overall.goalsFor ||
+          a.team.name.localeCompare(b.team.name),
+      );
 
-    return {
-      team,
-      filters: describeFilters(query),
-      overall: pick((row) => row.is_total),
-      home: pick((row) => !row.is_total && row.is_home === true),
-      away: pick((row) => !row.is_total && row.is_home === false),
-    };
+    return { filters: describeFilters(query), table: rows.map((row, index) => ({ rank: index + 1, ...row })) };
   },
 };

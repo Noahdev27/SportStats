@@ -19,9 +19,12 @@ export const teamStatsQuerySchema = analyticsFiltersSchema
   .extend({ last: z.coerce.number().int().min(1).max(100).optional() })
   .refine(fromBeforeTo, fromBeforeToIssue);
 
+export const standingsQuerySchema = analyticsFiltersSchema.refine(fromBeforeTo, fromBeforeToIssue);
+
 export type AnalyticsFilters = z.infer<typeof analyticsFiltersSchema>;
 export type OverviewQuery = z.infer<typeof overviewQuerySchema>;
 export type TeamStatsQuery = z.infer<typeof teamStatsQuerySchema>;
+export type StandingsQuery = z.infer<typeof standingsQuerySchema>;
 
 export interface SideAverages {
   home: number | null;
@@ -59,10 +62,30 @@ export interface TeamSplitStats {
   };
 }
 
-export interface TeamStats {
-  team: { id: number; name: string; shortName: string };
-  filters: Record<string, unknown>;
+export interface TeamSplits {
   overall: TeamSplitStats;
   home: TeamSplitStats;
   away: TeamSplitStats;
+}
+
+export interface TeamSummary {
+  id: number;
+  name: string;
+  shortName: string;
+}
+
+export interface TeamStats extends TeamSplits {
+  team: TeamSummary;
+  filters: Record<string, unknown>;
+}
+
+export interface StandingRow extends TeamSplits {
+  rank: number;
+  team: TeamSummary;
+  goalDifference: number;
+}
+
+export interface Standings {
+  filters: Record<string, unknown>;
+  table: StandingRow[];
 }

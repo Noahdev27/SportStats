@@ -53,7 +53,8 @@ const normalizeError = (error: unknown): AppError => {
 export const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
   const appError = normalizeError(error);
 
-  if (appError.statusCode >= 500) {
+  const unexpected = !(error instanceof AppError);
+  if (appError.statusCode >= 500 && unexpected) {
     logger.error(`${req.method} ${req.originalUrl} failed`, error);
   }
 
@@ -62,7 +63,7 @@ export const errorHandler: ErrorRequestHandler = (error, req, res, _next) => {
       code: appError.code,
       message: appError.message,
       ...(appError.details && { details: appError.details }),
-      ...(!isProduction && appError.statusCode >= 500 && error instanceof Error && { stack: error.stack }),
+      ...(!isProduction && unexpected && appError.statusCode >= 500 && error instanceof Error && { stack: error.stack }),
     },
   });
 };

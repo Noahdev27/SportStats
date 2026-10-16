@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../config/database.js';
+import { aiRouter } from './ai.routes.js';
 import { matchRouter } from './match.routes.js';
 import { statsRouter } from './stats.routes.js';
 import { teamRouter } from './team.routes.js';
@@ -11,6 +12,7 @@ export const apiRoutes = {
   '/teams': teamRouter,
   '/matches': matchRouter,
   '/stats': statsRouter,
+  '/ai': aiRouter,
 } as const;
 
 export const apiRouter = Router();

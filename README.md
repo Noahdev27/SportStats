@@ -7,6 +7,7 @@ API REST dédiée à la centralisation, à l'organisation et à l'analyse de don
 - **Langage** : TypeScript (mode `strict`, ESM)
 - **ORM / BDD** : Prisma ORM 7 (adaptateur `@prisma/adapter-pg`) + PostgreSQL
 - **Validation & sécurité** : Zod 4, Helmet, CORS, middleware global de gestion d'erreurs
+- **IA** : Grok (xAI) pour l'analyse d'avant-match, les résumés d'équipe et les questions en langage naturel
 - **Documentation** : OpenAPI 3.0 + Swagger UI (`/api-docs`)
 - **Tests** : Vitest + Supertest (tests d'intégration sur une vraie base PostgreSQL)
 
@@ -61,6 +62,7 @@ src/
 ├── config/            # Env (validé par Zod), client Prisma, spécification OpenAPI
 ├── controllers/       # Couche HTTP : lit la requête validée, renvoie la réponse
 ├── services/          # Logique métier & requêtes Prisma / SQL d'agrégation
+│   └── ai/            # Client Grok (xAI) et modèles de prompts
 ├── routes/            # Endpoints Express + middlewares de validation
 ├── middlewares/       # Validation Zod, gestion d'erreurs, logger de requêtes
 ├── types/             # Schémas Zod (DTO) et types dérivés
@@ -97,7 +99,11 @@ Tous les endpoints métier sont préfixés par `/api/v1`.
 | PUT | `/matches/:id/statistics` | Créer (201) ou remplacer (200) les statistiques |
 | DELETE | `/matches/:id/statistics` | Supprimer les statistiques |
 | GET | `/stats/overview` | Agrégats globaux : moyennes buts/corners, +2.5, BTTS, 1N2 |
+| GET | `/stats/standings` | Classement avec statistiques globales / domicile / extérieur |
 | GET | `/stats/teams/:id` | Statistiques d'une équipe : global / domicile / extérieur |
+| GET | `/ai/matches/:id/preview` | Analyse d'avant-match rédigée par Grok |
+| GET | `/ai/teams/:id/summary` | Résumé des performances d'une équipe rédigé par Grok |
+| POST | `/ai/ask` | Question en langage naturel sur les données |
 
 ### Filtres des matchs (`GET /api/v1/matches`)
 
@@ -144,6 +150,44 @@ Conventions :
 - `null` lorsqu'aucun match ne correspond (pas de division par zéro) ;
 - les corners ne sont moyennés que sur les matchs disposant de statistiques (`matchesWithData`).
 
+`GET /api/v1/stats/standings?season=2026/2027` renvoie le classement (points, puis différence de
+buts, puis buts marqués), chaque ligne contenant les mêmes blocs `overall` / `home` / `away`.
+
+## IA (Grok)
+
+L'API utilise **Grok** (xAI) via son endpoint compatible OpenAI (`POST {XAI_BASE_URL}/chat/completions`),
+avec le `fetch` natif de Node : aucun SDK supplémentaire.
+
+**Principe** : l'API calcule elle-même les statistiques (SQL), puis les transmet à Grok en JSON avec
+la consigne de s'appuyer **uniquement** sur ces données, sans rien inventer (blessures, transferts...).
+Chaque réponse contient le texte rédigé (`analysis`, en Markdown) **et** les données envoyées
+(`context`), ce qui permet de vérifier l'analyse ou d'exploiter directement les chiffres.
+
+| Endpoint | Données transmises à Grok |
+| --- | --- |
+| `GET /api/v1/ai/matches/:id/preview` | Forme (5 derniers matchs), stats domicile de l'équipe recevante et extérieur de l'équipe visiteuse sur la saison, 5 dernières confrontations directes, moyennes du championnat — uniquement des matchs antérieurs au coup d'envoi. Matchs `SCHEDULED`, `POSTPONED` ou `LIVE`. |
+| `GET /api/v1/ai/teams/:id/summary` | Stats de l'équipe (mêmes filtres que `/stats/teams/:id`) + 5 derniers résultats |
+| `POST /api/v1/ai/ask` | Classement complet avec splits domicile/extérieur, moyennes du championnat, 15 derniers résultats, 10 prochains matchs. Saison par défaut : la plus récente. |
+
+```bash
+curl -X POST http://localhost:3000/api/v1/ai/ask \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Quelle équipe obtient le plus de corners à domicile ?"}'
+```
+
+**Configuration** :
+
+1. Créez une clé API sur [console.x.ai](https://console.x.ai) et renseignez `XAI_API_KEY` dans `.env`.
+2. Vérifiez dans la console le modèle disponible pour votre compte et ajustez `XAI_MODEL`
+   (par défaut `grok-3-mini`, l'un des moins chers). Les crédits gratuits proposés par xAI
+   varient selon les périodes : consultez votre tableau de bord.
+3. `AI_RATE_LIMIT_PER_MINUTE` (10 par défaut) limite les appels par minute et par IP pour
+   préserver vos crédits.
+
+Sans clé, le reste de l'API fonctionne normalement et les endpoints `/ai` répondent
+`503 AI_NOT_CONFIGURED`. Les probabilités produites par Grok sont des estimations indicatives
+fondées sur les statistiques, pas des prédictions fiables.
+
 ## Formats de réponse
 
 ```jsonc
@@ -168,8 +212,11 @@ Conventions :
 | 400 | `VALIDATION_ERROR`, `INVALID_JSON`, `BAD_REQUEST` |
 | 404 | `NOT_FOUND`, `ROUTE_NOT_FOUND` |
 | 409 | `TEAM_ALREADY_EXISTS`, `TEAM_HAS_MATCHES`, `MATCH_NOT_PLAYED`, `UNIQUE_CONSTRAINT`, `FOREIGN_KEY_CONSTRAINT` |
+| 409 (IA) | `MATCH_NOT_UPCOMING` |
 | 413 | `PAYLOAD_TOO_LARGE` |
+| 429 | `RATE_LIMITED` (limite de l'API), `AI_RATE_LIMITED` (quota Grok) |
 | 500 | `INTERNAL_SERVER_ERROR`, `DATABASE_ERROR` |
+| 502 / 503 / 504 | `AI_UPSTREAM_ERROR`, `AI_AUTH_ERROR` / `AI_NOT_CONFIGURED` / `AI_TIMEOUT` |
 
 ## Règles métier des matchs
 
@@ -207,7 +254,8 @@ Les tests d'intégration utilisent la base désignée par `TEST_DATABASE_URL` (p
 tests ; par sécurité, la suite refuse de s'exécuter sur une base dont le nom ne contient pas `test`.
 
 Ils couvrent le CRUD, la validation et les règles métier, les filtres, les calculs d'analytics
-(valeurs vérifiées à la main) et la **couverture de la documentation** : un test échoue si une
+(valeurs vérifiées à la main), les endpoints IA (Grok est simulé : aucun appel réel, aucun crédit
+consommé) et la **couverture de la documentation** : un test échoue si une
 route Express n'est pas décrite dans la spécification OpenAPI (ou inversement).
 
 ## Variables d'environnement
@@ -218,4 +266,9 @@ route Express n'est pas décrite dans la spécification OpenAPI (ou inversement)
 | `PORT` | `3000` | Port HTTP |
 | `NODE_ENV` | `development` | `development`, `production` ou `test` |
 | `CORS_ORIGIN` | `*` | Origines autorisées, séparées par des virgules |
+| `XAI_API_KEY` | — (optionnel) | Clé API Grok ; sans elle, `/ai` répond 503 |
+| `XAI_MODEL` | `grok-3-mini` | Modèle Grok utilisé |
+| `XAI_BASE_URL` | `https://api.x.ai/v1` | URL de l'API xAI |
+| `XAI_TIMEOUT_MS` | `60000` | Délai maximal d'une réponse Grok |
+| `AI_RATE_LIMIT_PER_MINUTE` | `10` | Appels IA autorisés par minute et par IP |
 | `TEST_DATABASE_URL` | base `sportstats_test` locale | Base utilisée par `npm test` |

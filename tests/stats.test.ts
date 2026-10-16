@@ -106,3 +106,28 @@ describe('GET /api/v1/stats/teams/:id', () => {
     expect((await api().get(`/api/v1/stats/teams/${a}`).query({ last: 0 })).status).toBe(400);
   });
 });
+
+describe('GET /api/v1/stats/standings', () => {
+  it('ranks teams by points, then goal difference', async () => {
+    const res = await api().get('/api/v1/stats/standings').query({ season: '2026/2027' });
+
+    expect(res.status).toBe(200);
+    const table = res.body.data.table as { rank: number; team: { id: number }; goalDifference: number; overall: { points: number } }[];
+    expect(table.map((row) => [row.rank, row.team.id, row.overall.points, row.goalDifference])).toEqual([
+      [1, a, 7, 3],
+      [2, b, 1, -1],
+      [3, c, 0, -2],
+    ]);
+  });
+
+  it('exposes home / away splits consistent with the team endpoint', async () => {
+    const standings = await api().get('/api/v1/stats/standings');
+    const team = await api().get(`/api/v1/stats/teams/${b}`);
+    const row = standings.body.data.table.find((entry: { team: { id: number } }) => entry.team.id === b);
+    expect({ overall: row.overall, home: row.home, away: row.away }).toEqual({
+      overall: team.body.data.overall,
+      home: team.body.data.home,
+      away: team.body.data.away,
+    });
+  });
+});

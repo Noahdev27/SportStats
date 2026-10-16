@@ -152,6 +152,22 @@ const splitExample = {
   corners: { matchesWithData: 9, avgFor: 6.22, avgAgainst: 3.78, avgTotal: 10 },
 };
 
+const aiErrorResponses = {
+  429: response('TooManyRequests'),
+  502: response('AiUpstreamError'),
+  503: response('AiNotConfigured'),
+  504: response('AiTimeout'),
+};
+
+const aiAnswerExample = {
+  analysis:
+    '## Olympique Lyonnais – Paris Saint-Germain\n\n**Forme récente** : le PSG reste sur 4 victoires en 5 matchs (2,2 buts marqués par match)...',
+  context: { match: { id: 116, homeTeam: { id: 5, name: 'Olympique Lyonnais', shortName: 'OL' } }, '...': '...' },
+  model: 'grok-3-mini',
+  usage: { promptTokens: 1210, completionTokens: 420, totalTokens: 1630 },
+  generatedAt: '2026-10-16T17:00:00.000Z',
+};
+
 export const openApiDocument = {
   openapi: '3.0.3',
   info: {
@@ -177,6 +193,11 @@ export const openApiDocument = {
     { name: 'Matches', description: 'Gestion des matchs, filtres avancés.' },
     { name: 'Statistics', description: 'Statistiques détaillées d’un match (corners, tirs, possession, cartons).' },
     { name: 'Analytics', description: 'Agrégations : moyennes buts/corners, taux +2.5 buts, BTTS, répartition 1N2.' },
+    {
+      name: 'AI',
+      description:
+        'Analyses rédigées par Grok (xAI) à partir des statistiques calculées par l’API. Nécessite `XAI_API_KEY`. Limité à `AI_RATE_LIMIT_PER_MINUTE` appels par minute et par IP.',
+    },
     { name: 'System', description: 'Supervision.' },
   ],
   paths: {
@@ -438,6 +459,19 @@ export const openApiDocument = {
         },
       },
     },
+    '/api/v1/stats/standings': {
+      get: {
+        tags: ['Analytics'],
+        summary: 'Classement avec statistiques domicile / extérieur',
+        description: 'Tri : points, différence de buts, buts marqués. Seules les équipes ayant joué un match correspondant aux filtres apparaissent.',
+        operationId: 'getStandings',
+        parameters: analyticsFilterParams,
+        responses: {
+          200: { description: 'Classement.', content: json(dataOf(ref('Standings'))) },
+          400: response('ValidationError'),
+        },
+      },
+    },
     '/api/v1/stats/teams/{id}': {
       parameters: [param('Id')],
       get: {
@@ -469,6 +503,74 @@ export const openApiDocument = {
           },
           400: response('ValidationError'),
           404: response('NotFound'),
+        },
+      },
+    },
+
+    '/api/v1/ai/matches/{id}/preview': {
+      parameters: [param('Id')],
+      get: {
+        tags: ['AI'],
+        summary: 'Analyse d’avant-match générée par Grok',
+        description: [
+          'Grok reçoit la forme récente (5 derniers matchs) des deux équipes, leurs statistiques domicile/extérieur de la saison,',
+          'les confrontations directes et les moyennes du championnat — uniquement des données antérieures au coup d’envoi —',
+          'et rédige une analyse avec des tendances chiffrées (1N2, +2.5 buts, BTTS, +9.5 corners).',
+          'Disponible pour les matchs `SCHEDULED`, `POSTPONED` et `LIVE`. Les données transmises sont renvoyées dans `context`.',
+        ].join(' '),
+        operationId: 'getMatchPreview',
+        responses: {
+          200: { description: 'Analyse générée.', content: json(dataOf(ref('AiAnswer')), { data: aiAnswerExample }) },
+          400: response('ValidationError'),
+          404: response('NotFound'),
+          409: response('Conflict'),
+          ...aiErrorResponses,
+        },
+      },
+    },
+    '/api/v1/ai/teams/{id}/summary': {
+      parameters: [param('Id')],
+      get: {
+        tags: ['AI'],
+        summary: 'Résumé des performances d’une équipe généré par Grok',
+        description: 'Mêmes filtres que `GET /api/v1/stats/teams/{id}` ; les 5 derniers résultats sont ajoutés au contexte.',
+        operationId: 'getTeamSummary',
+        parameters: [
+          ...analyticsFilterParams,
+          {
+            name: 'last',
+            in: 'query',
+            description: 'Ne considérer que les N derniers matchs terminés.',
+            schema: { type: 'integer', minimum: 1, maximum: 100 },
+          },
+        ],
+        responses: {
+          200: { description: 'Résumé généré.', content: json(dataOf(ref('AiAnswer'))) },
+          400: response('ValidationError'),
+          404: response('NotFound'),
+          ...aiErrorResponses,
+        },
+      },
+    },
+    '/api/v1/ai/ask': {
+      post: {
+        tags: ['AI'],
+        summary: 'Poser une question en langage naturel sur les données',
+        description: [
+          'Grok répond à partir du classement (avec splits domicile/extérieur), des moyennes du championnat,',
+          'des 15 derniers résultats et des 10 prochains matchs de la saison demandée',
+          '(par défaut : la saison la plus récente ayant des matchs terminés).',
+        ].join(' '),
+        operationId: 'askQuestion',
+        requestBody: {
+          required: true,
+          content: json(ref('AskInput'), { question: 'Quelle équipe obtient le plus de corners à domicile ?', season: '2026/2027' }),
+        },
+        responses: {
+          200: { description: 'Réponse générée.', content: json(dataOf(ref('AiAnswer'))) },
+          400: response('ValidationError'),
+          404: response('NotFound'),
+          ...aiErrorResponses,
         },
       },
     },
@@ -511,6 +613,22 @@ export const openApiDocument = {
       NotFound: {
         description: 'Ressource introuvable.',
         content: json(ref('Error'), { error: { code: 'NOT_FOUND', message: 'Équipe introuvable (id: 999).' } }),
+      },
+      TooManyRequests: {
+        description: 'Limite d’appels atteinte (`RATE_LIMITED` : limite de l’API ; `AI_RATE_LIMITED` : quota Grok).',
+        content: json(ref('Error'), { error: { code: 'RATE_LIMITED', message: 'Trop de requêtes vers l’IA, réessayez dans une minute.' } }),
+      },
+      AiUpstreamError: {
+        description: 'Erreur du service Grok (`AI_UPSTREAM_ERROR`, `AI_AUTH_ERROR`).',
+        content: json(ref('Error'), { error: { code: 'AI_UPSTREAM_ERROR', message: 'Le service Grok a renvoyé une erreur (500).' } }),
+      },
+      AiNotConfigured: {
+        description: 'IA non configurée (`AI_NOT_CONFIGURED`) : `XAI_API_KEY` absente.',
+        content: json(ref('Error'), { error: { code: 'AI_NOT_CONFIGURED', message: 'L’IA n’est pas configurée : définissez XAI_API_KEY.' } }),
+      },
+      AiTimeout: {
+        description: 'Grok n’a pas répondu à temps (`AI_TIMEOUT`).',
+        content: json(ref('Error'), { error: { code: 'AI_TIMEOUT', message: 'Grok n’a pas répondu dans le délai imparti.' } }),
       },
       Conflict: {
         description: 'Conflit avec l’état actuel de la ressource.',
@@ -720,6 +838,59 @@ export const openApiDocument = {
           },
         },
       },
+      StandingRow: {
+        type: 'object',
+        properties: {
+          rank: { type: 'integer', example: 1 },
+          team: ref('TeamSummary'),
+          goalDifference: { type: 'integer', example: 22 },
+          overall: ref('TeamSplitStats'),
+          home: ref('TeamSplitStats'),
+          away: ref('TeamSplitStats'),
+        },
+      },
+      Standings: {
+        type: 'object',
+        properties: {
+          filters: { type: 'object', additionalProperties: true, description: 'Filtres appliqués.' },
+          table: { type: 'array', items: ref('StandingRow') },
+        },
+      },
+
+      AskInput: {
+        type: 'object',
+        required: ['question'],
+        additionalProperties: false,
+        properties: {
+          question: { type: 'string', minLength: 3, maxLength: 500, example: 'Quelle équipe obtient le plus de corners à domicile ?' },
+          competition: { type: 'string', example: 'Ligue 1' },
+          season: { type: 'string', description: 'Par défaut : la saison la plus récente.', example: '2026/2027' },
+        },
+      },
+      AiAnswer: {
+        type: 'object',
+        required: ['analysis', 'context', 'model', 'generatedAt'],
+        properties: {
+          analysis: { type: 'string', description: 'Texte rédigé par Grok (Markdown, en français).' },
+          context: {
+            type: 'object',
+            additionalProperties: true,
+            description: 'Données calculées par l’API et transmises à Grok : la réponse doit s’y appuyer.',
+          },
+          model: { type: 'string', example: 'grok-3-mini' },
+          usage: {
+            type: 'object',
+            nullable: true,
+            properties: {
+              promptTokens: { type: 'integer' },
+              completionTokens: { type: 'integer' },
+              totalTokens: { type: 'integer' },
+            },
+          },
+          generatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+
       TeamStats: {
         type: 'object',
         properties: {

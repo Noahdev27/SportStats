@@ -2,7 +2,7 @@ import type { Request, Response } from 'express';
 import { statsService } from '../services/stats.service.js';
 import type { IdParam } from '../types/common.schema.js';
 import type { MatchStatisticsInput } from '../types/match.schema.js';
-import type { OverviewQuery, TeamStatsQuery } from '../types/stats.schema.js';
+import type { OverviewQuery, StandingsQuery, TeamStatsQuery } from '../types/stats.schema.js';
 
 // Request data has already been validated and normalised by the `validate` middleware.
 export const statsController = {
@@ -25,6 +25,10 @@ export const statsController = {
 
   async getOverview(req: Request, res: Response) {
     res.json({ data: await statsService.getOverview(req.query as unknown as OverviewQuery) });
+  },
+
+  async getStandings(req: Request, res: Response) {
+    res.json({ data: await statsService.getStandings(req.query as unknown as StandingsQuery) });
   },
 
   async getTeamStats(req: Request, res: Response) {
