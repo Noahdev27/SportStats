@@ -36,6 +36,27 @@ npm run dev
 - Spécification brute : http://localhost:3000/api-docs.json
 - Santé : http://localhost:3000/health
 
+## Base de données sur Neon
+
+La base peut tourner sur [Neon](https://neon.tech) (PostgreSQL serverless, offre gratuite) au lieu
+de Docker. L'API n'a besoin d'aucune modification : seule la configuration change.
+
+1. Dans la console Neon, ouvrez le projet et cliquez sur **Connect**. Copiez :
+   - la chaîne **pooled** (hôte contenant `-pooler`) dans `DATABASE_URL` : c'est celle de l'API ;
+   - la chaîne **directe** (sans `-pooler`) dans `DIRECT_URL` : Prisma l'utilise pour les
+     migrations, qui ne passent pas par le pooler.
+2. Appliquez le schéma et, si la base est vide, les données de démonstration :
+
+```bash
+npm run db:deploy   # applique les migrations manquantes (aucune si la base est à jour)
+npm run db:seed     # optionnel : VIDE les tables puis réinsère les données de démo
+```
+
+3. Lancez l'API comme d'habitude (`npm run dev`).
+
+Les deux chaînes contiennent le mot de passe de la base : elles restent dans `.env`, qui n'est
+jamais commité. Les tests (`npm test`) continuent d'utiliser la base locale `sportstats_test`.
+
 ## Scripts
 
 | Script | Rôle |
@@ -271,7 +292,8 @@ route Express n'est pas décrite dans la spécification OpenAPI (ou inversement)
 
 | Variable | Défaut | Description |
 | --- | --- | --- |
-| `DATABASE_URL` | — (requis) | Chaîne de connexion PostgreSQL |
+| `DATABASE_URL` | — (requis) | Chaîne de connexion PostgreSQL (sur Neon : la chaîne « pooled ») |
+| `DIRECT_URL` | — (optionnel) | Connexion directe utilisée par les migrations Prisma (Neon : chaîne sans `-pooler`) |
 | `PORT` | `3000` | Port HTTP |
 | `NODE_ENV` | `development` | `development`, `production` ou `test` |
 | `CORS_ORIGIN` | `*` | Origines autorisées, séparées par des virgules |
